@@ -1,6 +1,7 @@
 import os
 import requests
 import logging
+import json
 from flask import Flask, request
 
 # إعداد التسجيل
@@ -24,9 +25,12 @@ def send_message(recipient_id, message_text):
     }
     try:
         response = requests.post(url, headers=headers, json=data)
-        if response.status_code != 200:
-            logger.error(f"فشل إرسال الرسالة: {response.text}")
-        return response.status_code == 200
+        if response.status_code == 200:
+            logger.info(f"✅ تم إرسال الرد إلى {recipient_id}")
+            return True
+        else:
+            logger.error(f"فشل الإرسال: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
         logger.error(f"خطأ في الإرسال: {str(e)}")
         return False
@@ -36,83 +40,91 @@ def get_ai_response(user_message):
     try:
         encoded_text = requests.utils.quote(user_message)
         full_url = f"{AI_API_URL}?text={encoded_text}"
-        logger.info(f"الاتصال بـ AI: {full_url[:100]}...")
-        response = requests.get(full_url, timeout=15)
+        logger.info(f"الاتصال بـ AI...")
+        response = requests.get(full_url, timeout=20)
         
         if response.status_code == 200:
             reply = response.text.strip()
-            if reply:
-                # محاولة استخراج النص من JSON إذا كان الرد JSON
-                try:
-                    import json
-                    reply_data = json.loads(reply)
-                    if 'response' in reply_data:
-                        reply = reply_data['response']
-                except:
-                    pass
-                return reply
-        return f"مرحبًا! أنا Star Ai. رسالتك: '{user_message}'"
+            # محاولة استخراج النص إذا كان JSON
+            try:
+                reply_data = json.loads(reply)
+                if 'response' in reply_data:
+                    reply = reply_data['response']
+            except:
+                pass
+            return reply
+        else:
+            logger.error(f"AI API error: {response.status_code}")
+            return f"مرحبًا! أنا Star Ai. كيف يمكنني مساعدتك؟"
     except Exception as e:
-        logger.error(f"خطأ في AI: {str(e)}")
-        return f"🌟 مرحبًا بك في Star Ai! كيف يمكنني مساعدتك؟"
+        logger.error(f"AI error: {str(e)}")
+        return f"🌟 مرحبًا! أنا Star Ai. رسالتك: {user_message[:50]}..."
 
-@app.route('/', methods=['GET'])
-def verify():
-    """التحقق من Webhook - مهم جداً"""
-    # طباعة كل المعاملات للتصحيح
-    logger.info(f"جميع المعاملات: {dict(request.args)}")
+@app.route('/', methods=['GET', 'POST'])
+def handle_all():
+    """معالجة جميع الطلبات (GET و POST)"""
     
-    # فيسبوك يرسل المعاملات بهذه الأسماء
-    mode = request.args.get('hub.mode')
-    token = request.args.get('hub.verify_token')
-    challenge = request.args.get('hub.challenge')
+    # طلبات GET - للتحقق من Webhook
+    if request.method == 'GET':
+        # طباعة كل شيء للتصحيح
+        logger.info(f"GET request with args: {dict(request.args)}")
+        
+        # فيسبوك يرسل هذه المعاملات للتحقق
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+        
+        # إذا كان طلب تحقق من فيسبوك
+        if mode == 'subscribe' and token == VERIFY_TOKEN:
+            logger.info("✅ Webhook verification successful!")
+            return challenge, 200
+        
+        # إذا كان طلب عادي
+        return "Star Ai Bot is running", 200
     
-    logger.info(f"mode: {mode}, token: {token}, challenge: {challenge}")
-    
-    if mode == 'subscribe' and token == VERIFY_TOKEN:
-        logger.info("✅ تم التحقق بنجاح!")
-        return challenge, 200
-    else:
-        logger.warning(f"❌ فشل التحقق. mode={mode}, token={token}")
-        return "Verification failed", 403
-
-@app.route('/', methods=['POST'])
-def webhook():
-    """استقبال الرسائل"""
-    data = request.get_json()
-    logger.info(f"📨 استلمت POST: {data}")
-    
-    if data and data.get('object') == 'page':
-        for entry in data.get('entry', []):
-            for messaging in entry.get('messaging', []):
-                sender_id = messaging.get('sender', {}).get('id')
-                message = messaging.get('message', {})
-                
-                if message and message.get('text'):
-                    user_text = message['text']
-                    logger.info(f"💬 رسالة من {sender_id}: {user_text}")
-                    
-                    # إظهار مؤشر الكتابة
-                    try:
-                        url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
-                        requests.post(url, json={
-                            "recipient": {"id": sender_id},
-                            "sender_action": "typing_on"
-                        })
-                    except Exception as e:
-                        logger.error(f"خطأ في مؤشر الكتابة: {e}")
-                    
-                    # الحصول على الرد
-                    ai_reply = get_ai_response(user_text)
-                    
-                    # إرسال الرد
-                    success = send_message(sender_id, ai_reply)
-                    if success:
-                        logger.info(f"✅ تم الرد على {sender_id}")
-                    else:
-                        logger.error(f"❌ فشل إرسال الرد إلى {sender_id}")
-    
-    return "ok", 200
+    # طلبات POST - استقبال الرسائل
+    if request.method == 'POST':
+        logger.info("📨 Received POST request")
+        
+        try:
+            data = request.get_json()
+            if not data:
+                logger.warning("No JSON data received")
+                return "ok", 200
+            
+            logger.info(f"Data: {json.dumps(data, ensure_ascii=False)[:500]}")
+            
+            if data.get('object') == 'page':
+                for entry in data.get('entry', []):
+                    for messaging in entry.get('messaging', []):
+                        sender_id = messaging.get('sender', {}).get('id')
+                        message = messaging.get('message', {})
+                        
+                        if message and message.get('text'):
+                            user_text = message['text']
+                            logger.info(f"💬 From {sender_id}: {user_text}")
+                            
+                            # إظهار مؤشر الكتابة
+                            try:
+                                typing_url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
+                                requests.post(typing_url, json={
+                                    "recipient": {"id": sender_id},
+                                    "sender_action": "typing_on"
+                                })
+                            except:
+                                pass
+                            
+                            # الحصول على الرد
+                            ai_reply = get_ai_response(user_text)
+                            
+                            # إرسال الرد
+                            send_message(sender_id, ai_reply)
+            
+            return "ok", 200
+            
+        except Exception as e:
+            logger.error(f"Error processing webhook: {str(e)}")
+            return "ok", 200
 
 @app.route('/health')
 def health():
