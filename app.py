@@ -26,19 +26,30 @@ def send_message(recipient_id, message_text):
         response = requests.post(url, headers=headers, json=data)
         if response.status_code != 200:
             logger.error(f"فشل إرسال الرسالة: {response.text}")
+        return response.status_code == 200
     except Exception as e:
         logger.error(f"خطأ في الإرسال: {str(e)}")
+        return False
 
 def get_ai_response(user_message):
     """الحصول على رد من API الذكاء الاصطناعي"""
     try:
         encoded_text = requests.utils.quote(user_message)
         full_url = f"{AI_API_URL}?text={encoded_text}"
+        logger.info(f"الاتصال بـ AI: {full_url[:100]}...")
         response = requests.get(full_url, timeout=15)
         
         if response.status_code == 200:
             reply = response.text.strip()
             if reply:
+                # محاولة استخراج النص من JSON إذا كان الرد JSON
+                try:
+                    import json
+                    reply_data = json.loads(reply)
+                    if 'response' in reply_data:
+                        reply = reply_data['response']
+                except:
+                    pass
                 return reply
         return f"مرحبًا! أنا Star Ai. رسالتك: '{user_message}'"
     except Exception as e:
@@ -47,26 +58,31 @@ def get_ai_response(user_message):
 
 @app.route('/', methods=['GET'])
 def verify():
-    """التحقق من Webhook"""
+    """التحقق من Webhook - مهم جداً"""
+    # طباعة كل المعاملات للتصحيح
+    logger.info(f"جميع المعاملات: {dict(request.args)}")
+    
+    # فيسبوك يرسل المعاملات بهذه الأسماء
+    mode = request.args.get('hub.mode')
     token = request.args.get('hub.verify_token')
     challenge = request.args.get('hub.challenge')
     
-    logger.info(f"طلب تحقق - token: {token}")
+    logger.info(f"mode: {mode}, token: {token}, challenge: {challenge}")
     
-    if token == VERIFY_TOKEN:
-        logger.info("✅ تم التحقق بنجاح")
-        return challenge
+    if mode == 'subscribe' and token == VERIFY_TOKEN:
+        logger.info("✅ تم التحقق بنجاح!")
+        return challenge, 200
     else:
-        logger.warning("❌ رمز التحقق غير صحيح")
+        logger.warning(f"❌ فشل التحقق. mode={mode}, token={token}")
         return "Verification failed", 403
 
 @app.route('/', methods=['POST'])
 def webhook():
     """استقبال الرسائل"""
     data = request.get_json()
-    logger.info(f"📨 استلمت بيانات: {data}")
+    logger.info(f"📨 استلمت POST: {data}")
     
-    if data.get('object') == 'page':
+    if data and data.get('object') == 'page':
         for entry in data.get('entry', []):
             for messaging in entry.get('messaging', []):
                 sender_id = messaging.get('sender', {}).get('id')
@@ -83,15 +99,18 @@ def webhook():
                             "recipient": {"id": sender_id},
                             "sender_action": "typing_on"
                         })
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"خطأ في مؤشر الكتابة: {e}")
                     
                     # الحصول على الرد
                     ai_reply = get_ai_response(user_text)
                     
                     # إرسال الرد
-                    send_message(sender_id, ai_reply)
-                    logger.info(f"✅ تم الرد على {sender_id}")
+                    success = send_message(sender_id, ai_reply)
+                    if success:
+                        logger.info(f"✅ تم الرد على {sender_id}")
+                    else:
+                        logger.error(f"❌ فشل إرسال الرد إلى {sender_id}")
     
     return "ok", 200
 
