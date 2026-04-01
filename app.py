@@ -3,8 +3,9 @@ import requests
 import logging
 import json
 import time
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from datetime import datetime
+from collections import defaultdict
 
 # ========== إعدادات التسجيل ==========
 logging.basicConfig(
@@ -21,6 +22,110 @@ ACCESS_TOKEN = 'EAA7qyWEuZABEBRHHyseD3Wet3ks1XeS6puLJEZAhgZBS8QY8SZBI8nT6gmSF212
 AI_API_URL = 'http://fi8.bot-hosting.net:20163/elos-gemina'
 COMPANY_URL = 'https://by-pro.kesug.com/'
 
+# ========== تخزين المحادثات ==========
+conversations = defaultdict(list)
+MAX_HISTORY = 8  # عدد الرسائل التي يتم تذكرها
+
+# ========== البرومبت الأساسي للبوت ==========
+SYSTEM_PROMPT = """أنت Star Ai، مساعد ذكي ودود تم تطويره بواسطة شركة B.Y PRO.
+تحدث بطريقة طبيعية ولطيفة، ليست رسمية جداً.
+عند سؤالك عن هويتك، قل أنك Star Ai من B.Y PRO.
+إذا سأل المستخدم عن موقع الشركة، أعطه الرابط: https://by-pro.kesug.com/
+لا تذكر Google أو ChatGPT أو OpenAI، أنت من B.Y PRO.
+حافظ على سياق المحادثة وتذكر ما قاله المستخدم سابقاً.
+ردودك مختصرة وواضحة."""
+
+def build_prompt(user_id, user_message):
+    """بناء البرومبت الكامل مع السياق"""
+    history = conversations.get(user_id, [])
+    
+    # بناء نص المحادثة السابقة
+    conversation_text = ""
+    for msg in history[-MAX_HISTORY:]:
+        if msg["role"] == "user":
+            conversation_text += f"المستخدم: {msg['content']}\n"
+        else:
+            conversation_text += f"Star Ai: {msg['content']}\n"
+    
+    # البرومبت النهائي
+    if conversation_text:
+        prompt = f"""{SYSTEM_PROMPT}
+
+المحادثة السابقة:
+{conversation_text}
+المستخدم: {user_message}
+Star Ai:"""
+    else:
+        prompt = f"""{SYSTEM_PROMPT}
+
+المستخدم: {user_message}
+Star Ai:"""
+    
+    return prompt
+
+def get_ai_response(user_message, user_id):
+    """الحصول على رد من API مع السياق الكامل"""
+    
+    # حفظ رسالة المستخدم
+    conversations[user_id].append({"role": "user", "content": user_message})
+    
+    # بناء البرومبت مع السياق
+    prompt = build_prompt(user_id, user_message)
+    
+    logger.info(f"📝 البرومبت المرسل (مختصر): {prompt[:200]}...")
+    
+    # الاتصال بـ API
+    try:
+        encoded_text = requests.utils.quote(prompt)
+        full_url = f"{AI_API_URL}?text={encoded_text}"
+        
+        response = requests.get(full_url, timeout=25)
+        
+        if response.status_code == 200:
+            raw = response.text.strip()
+            logger.info(f"📦 الرد الخام: {raw[:200]}")
+            
+            # معالجة الرد
+            try:
+                data = json.loads(raw)
+                reply = data.get('response', data.get('text', raw))
+            except:
+                reply = raw
+            
+            # تنظيف الرد من أي ذكر لـ Google/ChatGPT
+            unwanted = ['google', 'chatgpt', 'openai', 'gpt', 'bard', 'gemini']
+            for term in unwanted:
+                if term in reply.lower():
+                    reply = reply.replace(term, 'B.Y PRO')
+            
+            # حفظ الرد في التاريخ
+            conversations[user_id].append({"role": "assistant", "content": reply})
+            
+            # الاحتفاظ بآخر MAX_HISTORY*2 رسائل فقط
+            if len(conversations[user_id]) > MAX_HISTORY * 2:
+                conversations[user_id] = conversations[user_id][-MAX_HISTORY * 2:]
+            
+            return reply
+        else:
+            fallback = "عذراً، عندي مشكلة في الاتصال حالياً. جرب تسألني مرة ثانية؟"
+            conversations[user_id].append({"role": "assistant", "content": fallback})
+            return fallback
+            
+    except Exception as e:
+        logger.error(f"خطأ: {str(e)}")
+        fallback = "حصل عطل بسيط، جرب تسألني تاني؟"
+        conversations[user_id].append({"role": "assistant", "content": fallback})
+        return fallback
+
+# ========== أمر مسح المحادثة ==========
+def handle_reset(user_message, user_id):
+    msg_lower = user_message.lower()
+    if any(word in msg_lower for word in ['انسى', 'reset', 'clear', 'مسح', 'ابدأ من جديد']):
+        if user_id in conversations:
+            conversations[user_id] = []
+        return True
+    return False
+
 # ========== دالة إرسال الرسائل ==========
 def send_message(recipient_id, message_text, retry_count=2):
     url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
@@ -36,77 +141,14 @@ def send_message(recipient_id, message_text, retry_count=2):
             if response.status_code == 200:
                 logger.info(f"✅ تم الإرسال إلى {recipient_id}")
                 return True
-            else:
-                logger.error(f"❌ فشل الإرسال: {response.status_code}")
         except Exception as e:
-            logger.error(f"⚠️ خطأ: {str(e)}")
+            logger.error(f"خطأ: {str(e)}")
         
         if attempt < retry_count:
             time.sleep(2 ** attempt)
     
     return False
 
-# ========== دالة معالجة الأسئلة المخصصة (مختصرة) ==========
-def handle_special_queries(user_message):
-    msg_lower = user_message.lower()
-    
-    # سؤال عن الهوية
-    if any(word in msg_lower for word in ['من انت', 'من أنت', 'who are you', 'اسمك']):
-        return "أنا Star Ai، تم تطويري بواسطة شركة B.Y PRO."
-    
-    # سؤال عن المطور
-    if any(word in msg_lower for word in ['من صنعك', 'مطورك', 'developer', 'المطور']):
-        return "تم تطويري بواسطة شركة B.Y PRO."
-    
-    # سؤال عن الموقع (فقط هنا يظهر الرابط)
-    if any(word in msg_lower for word in ['موقع', 'website', 'رابط', 'link', 'الموقع']):
-        return f"يمكنك زيارة موقع شركة B.Y PRO عبر الرابط التالي:\n{COMPANY_URL}"
-    
-    # سؤال عن الشركة (رد مختصر)
-    if any(word in msg_lower for word in ['شركة', 'company', 'by pro', 'بي برو']):
-        return "أنا من تطوير شركة B.Y PRO."
-    
-    return None
-
-# ========== دالة الحصول على رد AI ==========
-def get_ai_response(user_message):
-    # التحقق من الأسئلة المخصصة أولاً
-    special_response = handle_special_queries(user_message)
-    if special_response:
-        logger.info("🎯 سؤال مخصص")
-        return special_response
-    
-    # الاتصال بـ API
-    try:
-        encoded_text = requests.utils.quote(user_message)
-        full_url = f"{AI_API_URL}?text={encoded_text}"
-        
-        response = requests.get(full_url, timeout=20)
-        
-        if response.status_code == 200:
-            raw = response.text.strip()
-            try:
-                data = json.loads(raw)
-                reply = data.get('response', data.get('text', raw))
-            except:
-                reply = raw
-            
-            # تنظيف الرد من أي ذكر لـ Google أو ChatGPT
-            unwanted = ['google', 'chatgpt', 'openai', 'gpt', 'bard', 'gemini']
-            for term in unwanted:
-                if term in reply.lower():
-                    reply = reply.replace(term, 'B.Y PRO')
-                    reply = reply.replace(term.upper(), 'B.Y PRO')
-            
-            return reply
-        else:
-            return "أنا Star Ai من B.Y PRO. كيف يمكنني مساعدتك؟"
-            
-    except Exception as e:
-        logger.error(f"خطأ: {str(e)}")
-        return "أنا Star Ai من B.Y PRO. حدث خطأ، حاول مرة أخرى."
-
-# ========== دالة مؤشر الكتابة ==========
 def show_typing(sender_id):
     try:
         url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
@@ -138,8 +180,6 @@ def webhook():
             return "Star Ai Bot is running", 200
     
     if request.method == 'POST':
-        logger.info("📨 POST received")
-        
         try:
             data = request.get_json()
             if not data or data.get('object') != 'page':
@@ -154,8 +194,14 @@ def webhook():
                         user_text = message['text']
                         logger.info(f"💬 {sender_id}: {user_text}")
                         
+                        # التحقق من أمر مسح المحادثة
+                        if handle_reset(user_text, sender_id):
+                            reply = "تم مسح ذاكرتي! لنبدأ من جديد. كيف حالك؟"
+                            send_message(sender_id, reply)
+                            continue
+                        
                         show_typing(sender_id)
-                        ai_reply = get_ai_response(user_text)
+                        ai_reply = get_ai_response(user_text, sender_id)
                         send_message(sender_id, ai_reply)
             
             return "ok", 200
