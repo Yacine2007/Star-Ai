@@ -7,7 +7,6 @@ import threading
 from flask import Flask, request
 from datetime import datetime
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 
 # ========== إعدادات التسجيل ==========
 logging.basicConfig(
@@ -20,21 +19,54 @@ app = Flask(__name__)
 
 # ========== الإعدادات الأساسية ==========
 VERIFY_TOKEN = 'StarAiBot2026Secure'
-ACCESS_TOKEN = 'EAA7qyWEuZABEBRHHyseD3Wet3ks1XeS6puLJEZAhgZBS8QY8SZBI8nT6gmSF212o0fEGBwhuZB1pq8ujYJxc2C89LdtBapBI5oZCo0mZAXcRlLZBdWLHLmlnoaNUYyIh16X3sBJBbH7ILgudzPqETRd5qMGAHEOEVqtO5kZCt3kXTqFZC5KorhXJhJkqDxmrm41YsMY3mqLrTPLiYB52g7MvZBlPdygeZCv0yAjwDmkU9wZDZD'
+# استخدم التوكن الطويل الجديد
+ACCESS_TOKEN = 'EAA7qyWEuZABEBRFjgX4bmKBfHZBYR6ev5jtW3ZBQubKU4RUXZBj1MRmfDSP0iQk9DgsDzm01rdMBPCewmPr4SwjQZChodouEYjSd7ZBZBKYE1V1yHpiCZBHQ8W2A45yKgTcrbNYdCvpleOHcBy1Uu5cqv51WuNL6NM5fMglhWiNCq1uXv9PCnWFALkFmnP1BJGOyZA1FO2lUZD'
 AI_API_URL = 'http://fi8.bot-hosting.net:20163/elos-gemina'
 COMPANY_URL = 'https://by-pro.kesug.com/'
 
 # ========== تخزين المحادثات ==========
 conversations = defaultdict(list)
-MAX_HISTORY = 5  # تقليل عدد الرسائل المحفوظة لزيادة السرعة
+MAX_HISTORY = 5
 
-# ========== برومبت مبسط ==========
 SYSTEM_PROMPT = """أنت Star Ai من B.Y PRO. ردودك مختصرة وسريعة وودودة."""
 
-def get_ai_response_async(user_message, user_id):
-    """الحصول على رد من API بشكل غير متزامن"""
+def send_message(recipient_id, message_text):
+    """إرسال رسالة عبر فيسبوك - نسخة مبسطة"""
     try:
-        # بناء برومبت مبسط
+        url = "https://graph.facebook.com/v18.0/me/messages"
+        params = {"access_token": ACCESS_TOKEN}
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": message_text},
+            "messaging_type": "RESPONSE"
+        }
+        
+        logger.info(f"📤 إرسال إلى {recipient_id}: {message_text[:50]}...")
+        
+        response = requests.post(url, params=params, headers=headers, json=payload, timeout=10)
+        
+        logger.info(f"📊 حالة الإرسال: {response.status_code}")
+        
+        if response.status_code == 200:
+            logger.info(f"✅ تم الإرسال بنجاح")
+            return True
+        else:
+            logger.error(f"❌ فشل: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"⚠️ خطأ: {str(e)}")
+        return False
+
+def get_ai_response(user_message, user_id):
+    """الحصول على رد من API"""
+    try:
+        # حفظ رسالة المستخدم
+        conversations[user_id].append({"role": "user", "content": user_message})
+        
+        # بناء السياق
         history = conversations.get(user_id, [])
         context = ""
         for msg in history[-MAX_HISTORY:]:
@@ -48,10 +80,10 @@ def get_ai_response_async(user_message, user_id):
         else:
             prompt = f"{SYSTEM_PROMPT}\n\nس: {user_message}\nج:"
         
+        # الاتصال بـ API
         encoded_text = requests.utils.quote(prompt)
         full_url = f"{AI_API_URL}?text={encoded_text}"
         
-        # تقليل وقت المهلة
         response = requests.get(full_url, timeout=12)
         
         if response.status_code == 200:
@@ -62,86 +94,43 @@ def get_ai_response_async(user_message, user_id):
             except:
                 reply = raw
             
-            # تنظيف سريع
+            # تنظيف الرد
             unwanted = ['google', 'chatgpt', 'openai', 'gpt', 'bard', 'gemini']
             for term in unwanted:
                 if term in reply.lower():
                     reply = reply.replace(term, 'B.Y PRO')
+            
+            # حفظ الرد
+            conversations[user_id].append({"role": "assistant", "content": reply})
+            
+            # تنظيف الذاكرة
+            if len(conversations[user_id]) > MAX_HISTORY * 2:
+                conversations[user_id] = conversations[user_id][-MAX_HISTORY * 2:]
             
             return reply
         else:
             return None
             
     except Exception as e:
-        logger.error(f"خطأ: {str(e)}")
+        logger.error(f"خطأ API: {str(e)}")
         return None
 
-def send_message_async(recipient_id, message_text):
-    """إرسال رسالة بشكل غير متزامن"""
-    try:
-        url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
-        headers = {"Content-Type": "application/json"}
-        data = {
-            "recipient": {"id": recipient_id},
-            "message": {"text": message_text}
-        }
-        
-        response = requests.post(url, headers=headers, json=data, timeout=10)
-        if response.status_code == 200:
-            logger.info(f"✅ تم الإرسال إلى {recipient_id}")
-            return True
-        else:
-            logger.error(f"فشل: {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"خطأ: {str(e)}")
-        return False
-
 def process_message(sender_id, user_text):
-    """معالجة الرسالة في خيط منفصل"""
+    """معالجة الرسالة"""
     try:
-        # حفظ رسالة المستخدم
-        conversations[sender_id].append({"role": "user", "content": user_text})
-        
         # الحصول على الرد
-        reply = get_ai_response_async(user_text, sender_id)
+        reply = get_ai_response(user_text, sender_id)
         
-        # إذا فشل الرد، استخدم رد افتراضي
+        # إذا فشل API، استخدم رد افتراضي
         if not reply:
-            # ردود افتراضية سريعة
-            default_replies = [
-                "مرحباً! كيف我可以 مساعدتك؟",
-                "أهلاً! أنا Star Ai من B.Y PRO.",
-                "كيف حالك؟ أنا هنا للمساعدة.",
-                "أنا Star Ai، تفضل اسأل ما تريد."
-            ]
-            import random
-            reply = random.choice(default_replies)
-        
-        # حفظ الرد
-        conversations[sender_id].append({"role": "assistant", "content": reply})
-        
-        # الاحتفاظ بآخر الرسائل فقط
-        if len(conversations[sender_id]) > MAX_HISTORY * 2:
-            conversations[sender_id] = conversations[sender_id][-MAX_HISTORY * 2:]
+            reply = "مرحباً! أنا Star Ai من B.Y PRO. كيف يمكنني مساعدتك؟"
         
         # إرسال الرد
-        send_message_async(sender_id, reply)
+        send_message(sender_id, reply)
         
     except Exception as e:
         logger.error(f"خطأ في المعالجة: {str(e)}")
-        # محاولة إرسال رد افتراضي
-        send_message_async(sender_id, "عذراً، حدث خطأ. جرب مرة أخرى؟")
-
-# ========== أمر مسح المحادثة ==========
-def handle_reset(user_message, user_id):
-    msg_lower = user_message.lower()
-    reset_words = ['انسى', 'reset', 'clear', 'مسح', 'ابدأ من جديد', 'ننسى']
-    if any(word in msg_lower for word in reset_words):
-        if user_id in conversations:
-            conversations[user_id] = []
-        return True
-    return False
+        send_message(sender_id, "عذراً، حدث خطأ. حاول مرة أخرى؟")
 
 # ========== نقاط النهاية ==========
 @app.route('/', methods=['GET', 'POST', 'HEAD'])
@@ -175,14 +164,9 @@ def webhook():
                     
                     if sender_id and message and message.get('text'):
                         user_text = message['text']
-                        logger.info(f"💬 {sender_id}: {user_text[:50]}")
+                        logger.info(f"💬 {sender_id}: {user_text}")
                         
-                        # التحقق من أمر المسح
-                        if handle_reset(user_text, sender_id):
-                            send_message_async(sender_id, "تم مسح ذاكرتي! كيف حالك؟")
-                            continue
-                        
-                        # معالجة الرسالة في خيط منفصل (لا تنتظر)
+                        # معالجة في خيط منفصل
                         thread = threading.Thread(target=process_message, args=(sender_id, user_text))
                         thread.daemon = True
                         thread.start()
