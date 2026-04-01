@@ -2,126 +2,103 @@ import os
 import requests
 import logging
 from flask import Flask, request
-from pymessenger import Bot
-from dotenv import load_dotenv
 
-# تحميل المتغيرات البيئية من ملف .env
-load_dotenv()
-
-# إعداد نظام التسجيل
+# إعداد التسجيل
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# إعداد تطبيق Flask
 app = Flask(__name__)
 
-# قراءة الإعدادات من متغيرات البيئة
-ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN')
-VERIFY_TOKEN = os.getenv('VERIFY_TOKEN')
-AI_API_URL = os.getenv('AI_API_URL')
+# الإعدادات
+VERIFY_TOKEN = 'StarAiBot2026Secure'
+ACCESS_TOKEN = 'EAA7qyWEuZABEBRIMqFwFkN5vFDa65duXGvh5C4YA3ZBSw90DsGgRQmTIAfhZBqgxPq7KHtDcdKKwKhjmMeXM6zZCfDiRAAzqzZCw2C1SOZCM0l063MFytUXZA1XNXwK5lspJl0mnbEkPVAZAajBZCHGBwAUlHSrQbPCDTM2KuZCo5q5z3WXcp5FjTmXYidVJZCZCEnQPEvC47SXx'
+AI_API_URL = 'http://fi8.bot-hosting.net:20163/elos-gemina'
 
-# التحقق من وجود التوكن
-if not ACCESS_TOKEN:
-    raise ValueError("لم يتم العثور على PAGE_ACCESS_TOKEN في ملف .env")
-if not VERIFY_TOKEN:
-    raise ValueError("لم يتم العثور على VERIFY_TOKEN في ملف .env")
-
-# تهيئة البوت
-bot = Bot(ACCESS_TOKEN)
+def send_message(recipient_id, message_text):
+    """إرسال رسالة عبر فيسبوك"""
+    url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text}
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code != 200:
+            logger.error(f"فشل إرسال الرسالة: {response.text}")
+    except Exception as e:
+        logger.error(f"خطأ في الإرسال: {str(e)}")
 
 def get_ai_response(user_message):
-    """
-    إرسال الرسالة إلى API الذكاء الاصطناعي والحصول على الرد
-    """
+    """الحصول على رد من API الذكاء الاصطناعي"""
     try:
-        # ترميز النص وتجهيز الرابط
         encoded_text = requests.utils.quote(user_message)
         full_url = f"{AI_API_URL}?text={encoded_text}"
-        
-        logger.info(f"جاري الاتصال بـ API: {AI_API_URL}")
-        
-        # إرسال الطلب مع مهلة 15 ثانية
         response = requests.get(full_url, timeout=15)
         
         if response.status_code == 200:
-            ai_reply = response.text.strip()
-            # التأكد من أن الرد ليس فارغًا
-            if ai_reply:
-                return ai_reply
-            else:
-                return "🤖 عذرًا، لم أتلقَ ردًا من الخدمة. حاول مرة أخرى."
-        else:
-            logger.error(f"API error: {response.status_code}")
-            return f"⚠️ عذرًا، واجهت مشكلة في الاتصال (الرمز: {response.status_code})"
-            
-    except requests.exceptions.Timeout:
-        logger.error("Timeout error")
-        return "⏰ الخدمة لا تستجيب بسرعة كافية. حاول لاحقًا."
-    except requests.exceptions.ConnectionError:
-        logger.error("Connection error")
-        return "🔌 لا يمكن الاتصال بخدمة الذكاء الاصطناعي. تأكد من اتصالك بالإنترنت."
+            reply = response.text.strip()
+            if reply:
+                return reply
+        return f"مرحبًا! أنا Star Ai. رسالتك: '{user_message}'"
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return f"❌ حدث خطأ غير متوقع: {str(e)[:100]}"
+        logger.error(f"خطأ في AI: {str(e)}")
+        return f"🌟 مرحبًا بك في Star Ai! كيف يمكنني مساعدتك؟"
 
-@app.route("/", methods=['GET', 'POST'])
+@app.route('/', methods=['GET'])
+def verify():
+    """التحقق من Webhook"""
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+    
+    logger.info(f"طلب تحقق - token: {token}")
+    
+    if token == VERIFY_TOKEN:
+        logger.info("✅ تم التحقق بنجاح")
+        return challenge
+    else:
+        logger.warning("❌ رمز التحقق غير صحيح")
+        return "Verification failed", 403
+
+@app.route('/', methods=['POST'])
 def webhook():
-    """
-    نقطة نهاية Webhook لاستقبال الرسائل من فيسبوك ماسنجر
-    """
-    # التحقق من الرمز (Verification)
-    if request.method == 'GET':
-        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
-            logger.info("Webhook verified successfully")
-            return request.args.get("hub.challenge")
-        logger.warning("Invalid verification token")
-        return "Verification token mismatch", 403
+    """استقبال الرسائل"""
+    data = request.get_json()
+    logger.info(f"📨 استلمت بيانات: {data}")
+    
+    if data.get('object') == 'page':
+        for entry in data.get('entry', []):
+            for messaging in entry.get('messaging', []):
+                sender_id = messaging.get('sender', {}).get('id')
+                message = messaging.get('message', {})
+                
+                if message and message.get('text'):
+                    user_text = message['text']
+                    logger.info(f"💬 رسالة من {sender_id}: {user_text}")
+                    
+                    # إظهار مؤشر الكتابة
+                    try:
+                        url = f"https://graph.facebook.com/v18.0/me/messages?access_token={ACCESS_TOKEN}"
+                        requests.post(url, json={
+                            "recipient": {"id": sender_id},
+                            "sender_action": "typing_on"
+                        })
+                    except:
+                        pass
+                    
+                    # الحصول على الرد
+                    ai_reply = get_ai_response(user_text)
+                    
+                    # إرسال الرد
+                    send_message(sender_id, ai_reply)
+                    logger.info(f"✅ تم الرد على {sender_id}")
+    
+    return "ok", 200
 
-    # معالجة الرسائل الواردة
-    if request.method == 'POST':
-        data = request.get_json()
-        
-        # التأكد من أن الحدث من صفحة
-        if data.get('object') == 'page':
-            for entry in data.get('entry', []):
-                for messaging_event in entry.get('messaging', []):
-                    # التحقق من وجود رسالة نصية
-                    if messaging_event.get('message') and messaging_event['message'].get('text'):
-                        sender_id = messaging_event['sender']['id']
-                        user_text = messaging_event['message']['text']
-                        
-                        logger.info(f"رسالة من {sender_id}: {user_text}")
-                        
-                        # إظهار مؤشر الكتابة
-                        try:
-                            bot.send_action(sender_id, "typing_on")
-                        except:
-                            pass
-                        
-                        # الحصول على الرد من AI
-                        ai_reply = get_ai_response(user_text)
-                        
-                        # إرسال الرد
-                        try:
-                            bot.send_text_message(sender_id, ai_reply)
-                            logger.info(f"تم الرد على {sender_id}")
-                        except Exception as e:
-                            logger.error(f"فشل إرسال الرد: {str(e)}")
-                            # محاولة إرسال رسالة خطأ
-                            try:
-                                bot.send_text_message(sender_id, "⚠️ عذرًا، حدث خطأ في إرسال الرد.")
-                            except:
-                                pass
-        
-        return "ok", 200
+@app.route('/health')
+def health():
+    return "OK", 200
 
-@app.route("/health", methods=['GET'])
-def health_check():
-    """
-    نقطة نهاية للتحقق من صحة البوت
-    """
-    return {"status": "healthy", "bot": "Star Ai"}, 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
