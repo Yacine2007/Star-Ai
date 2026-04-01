@@ -60,9 +60,13 @@ def get_ai_response(user_message):
         logger.error(f"AI error: {str(e)}")
         return f"🌟 مرحبًا! أنا Star Ai. رسالتك: {user_message[:50]}..."
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['GET', 'POST', 'HEAD'])
 def handle_all():
-    """معالجة جميع الطلبات (GET و POST)"""
+    """معالجة جميع الطلبات (GET, POST, HEAD)"""
+    
+    # معالجة طلبات HEAD (يستخدمها Render للتحقق)
+    if request.method == 'HEAD':
+        return '', 200
     
     # طلبات GET - للتحقق من Webhook
     if request.method == 'GET':
